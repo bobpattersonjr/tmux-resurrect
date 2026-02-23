@@ -26,7 +26,12 @@ _build_skip_cmd_list() {
 
 _should_skip_cmd_lookup() {
 	local cmd="$1"
-	[[ "$_skip_cmd_lookup_list" == *" ${cmd} "* ]]
+	# Exact match against skip list
+	[[ "$_skip_cmd_lookup_list" == *" ${cmd} "* ]] && return 0
+	# Claude CLI reports its version (e.g. "2.1.50") as pane_current_command
+	# instead of "claude". Match semver-like patterns.
+	[[ "$cmd" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] && return 0
+	return 1
 }
 
 # delimiters
