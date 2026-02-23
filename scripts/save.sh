@@ -6,6 +6,29 @@ source "$CURRENT_DIR/variables.sh"
 source "$CURRENT_DIR/helpers.sh"
 source "$CURRENT_DIR/spinner_helpers.sh"
 
+# Commands to skip the expensive per-pane `ps` full-command lookup for.
+# Long-running interactive processes (claude, devenv, etc.) cause save.sh
+# to hang because their deep process trees make `ps -ao ppid,args` slow.
+# For these panes, we record just the pane_current_command from tmux
+# instead of spawning a subprocess per pane.
+#
+# Configure via tmux option (space-separated list):
+#   set -g @resurrect-save-skip-cmd-lookup 'claude devenv ssh node'
+#
+# Default skip list: claude
+_skip_cmd_lookup_list=""
+
+_build_skip_cmd_list() {
+	local user_list="$(get_tmux_option "@resurrect-save-skip-cmd-lookup" "")"
+	local default_skip="claude"
+	_skip_cmd_lookup_list=" ${default_skip} ${user_list} "
+}
+
+_should_skip_cmd_lookup() {
+	local cmd="$1"
+	[[ "$_skip_cmd_lookup_list" == *" ${cmd} "* ]]
+}
+
 # delimiters
 d=$'\t'
 delimiter=$'\t'
@@ -194,7 +217,13 @@ dump_panes() {
 			if is_session_grouped "$session_name"; then
 				continue
 			fi
-			full_command="$(pane_full_command $pane_pid)"
+			if _should_skip_cmd_lookup "$pane_command"; then
+				# Skip expensive ps subprocess for long-running commands.
+				# Use the tmux-reported pane_current_command directly.
+				full_command="$pane_command"
+			else
+				full_command="$(pane_full_command $pane_pid)"
+			fi
 			dir=$(echo $dir | sed 's/ /\\ /') # escape all spaces in directory path
 			echo "${line_type}${d}${session_name}${d}${window_number}${d}${window_active}${d}${window_flags}${d}${pane_index}${d}${pane_title}${d}${dir}${d}${pane_active}${d}${pane_command}${d}:${full_command}"
 		done
@@ -222,6 +251,12 @@ dump_pane_contents() {
 	local pane_contents_area="$(get_tmux_option "$pane_contents_area_option" "$default_pane_contents_area")"
 	dump_panes_raw |
 		while IFS=$d read line_type session_name window_number window_active window_flags pane_index pane_title dir pane_active pane_command pane_pid history_size; do
+			# Skip capturing pane contents for long-running commands.
+			# These often have massive scrollback buffers that are slow
+			# to capture and not useful for restore.
+			if _should_skip_cmd_lookup "$pane_command"; then
+				continue
+			fi
 			capture_pane_contents "${session_name}:${window_number}.${pane_index}" "$history_size" "$pane_contents_area"
 		done
 }
@@ -265,6 +300,7 @@ show_output() {
 
 main() {
 	if supported_tmux_version_ok; then
+		_build_skip_cmd_list
 		if show_output; then
 			start_spinner "Saving..." "Tmux environment saved!"
 		fi
